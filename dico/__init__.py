@@ -337,6 +337,9 @@ class Document(object):
         self._parent = parent
         self._parent_field = parent_field
 
+        self.update_from_dict(values, changed=False)
+
+    def update_from_dict(self, values, changed=True):
         # TODO: this check should be done during __new__
         for alias, key in self._aliases:
             if alias in values:
@@ -353,6 +356,8 @@ class Document(object):
                 if hasattr(field, "_prepare"):
                     value = field._prepare(self, value)
                 object.__setattr__(self, key, value)
+                if changed:
+                    field._changed(self)
 
     def __getattr__(self, name):
         field = self._fields.get(name, None)
@@ -391,7 +396,7 @@ class Document(object):
                     raise KeyError
 
             field = self._fields[field_name]
-            value = getattr(self, field_name)
+            value = getattr(self, field_name, None)
 
             if value is None:
                 if stop_on_required and field.is_required:
@@ -462,10 +467,11 @@ class Document(object):
             if isinstance(self._fields[field], ListField):
                 if isinstance(self._fields[field].subfield, EmbeddedDocumentField):
                     current_field = []
-                    for doc in data_dict[field]:
-                        call_method = getattr(doc, 'dict_for_%s' % visibility)
-                        current_field.append(call_method(json_compliant))
-                    data_dict[field] = current_field
+                    if field in data_dict:
+                        for doc in data_dict[field]:
+                            call_method = getattr(doc, 'dict_for_%s' % visibility)
+                            current_field.append(call_method(json_compliant))
+                        data_dict[field] = current_field
         return data_dict
 
     def dict_for_save(self, json_compliant=False):
