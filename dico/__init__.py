@@ -320,6 +320,7 @@ class DocumentMetaClass(type):
                     base_fields.update(klass._fields)
                     klass._fields = base_fields
                     klass._aliases += base._aliases
+            klass.add_view("dict", klass._fields.keys())
         return klass
 
 
@@ -435,141 +436,49 @@ class Document(object):
         """
         return self.validate(stop_on_required=False)
 
-    def _apply_filters(self, filters_list_or_callable, to_filter):
-        """ apply all filters function (one arg the dict to filter)
-        """
-        try:
-            iter(filters_list_or_callable)
-        except TypeError:
-            if callable(filters_list_or_callable):
-                return filters_list_or_callable(to_filter)
-            else:
-                return to_filter
-
-        for filter in filters_list_or_callable:
-            if callable(filter):
-                to_filter = filter(to_filter)
-
-        return to_filter
-
-    def _call_for_visibility_on_child(self, data_dict, fields_list,
-                                      visibility, json_compliant=False):
-        """ this will call dict_for_%s() visibility on EmbeddedDocument
-            and ListField and return a dict
-            containing data_dict with key replaced by the result (in place)
-        """
-        for field in fields_list:
-            if isinstance(self._fields[field], EmbeddedDocumentField):
-                if field in data_dict and data_dict[field] is not None:
-                    call_method = getattr(data_dict[field], 'dict_for_%s' % visibility)
-                    data_dict[field] = call_method(json_compliant)
-
-            if isinstance(self._fields[field], ListField):
-                if isinstance(self._fields[field].subfield, EmbeddedDocumentField):
-                    current_field = []
-                    if field in data_dict:
-                        for doc in data_dict[field]:
-                            call_method = getattr(doc, 'dict_for_%s' % visibility)
-                            current_field.append(call_method(json_compliant))
-                        data_dict[field] = current_field
-        return data_dict
-
-    def dict_for_save(self, json_compliant=False):
-        """ return a copy dict with field_name:value
-            raise ValidationError if not valid
-        """
-        # TODO: put back a cache here if validate has been called earlier
-        if not self.validate():
-            raise ValidationException()
-
-        save_dict = {}
-        for key in self._fields.keys():
-            value = getattr(self, key)
-            if value is not None:
-                save_dict[key] = value
-
-        # we have to call dict_for_save() on embedded document
-        save_dict = self._call_for_visibility_on_child(save_dict,
-            self._fields, 'save', json_compliant)
-
-        has_filter = getattr(self, 'pre_save_filter', None)
-
-        return save_dict if has_filter is None else \
-            self._apply_filters(self.pre_save_filter, save_dict)
-
-    def dict_for_public(self, json_compliant=False):
-        """ return a copy dict with keys specified in public_fields
-            with value from _data or self.property
-            or return empty dict
-            raise ValidationError if not valid
-        """
-        public_fields = getattr(self, 'public_fields', [])
-        public_dict = self._dict_for_fields('public', public_fields, json_compliant)
-        has_filter = getattr(self, 'pre_public_filter', None)
-        return public_dict if has_filter is None else\
-            self._apply_filters(self.pre_public_filter, public_dict)
-
-    def dict_for_owner(self, json_compliant=False):
-        """ return a copy dict with keys specified in owner_fields
-            with value from _data or self.property
-            or return empty dict
-            raise ValidationError if not valid
-        """
-        owner_fields = getattr(self, 'owner_fields', [])
-        owner_dict = self._dict_for_fields('owner', owner_fields, json_compliant)
-        has_filter = getattr(self, 'pre_owner_filter', None)
-        return owner_dict if has_filter is None else\
-            self._apply_filters(self.pre_owner_filter, owner_dict)
-
-    def _dict_for_fields(self, visibility, fields_list=None, json_compliant=False):
-        """ return a dict with keys specified in fields_list from _data
-            or self.property
-            or return empty dict
-            call embedded fields if needed
-            raise ValidationError if not valid
-        """
-        if fields_list is None:
-            return {}
-        if not self._is_valid:
-            if not self._validate_fields(fields_list, stop_on_required=True):
-                raise ValidationException()
-
-        # find all the keys in fields_list that are fields
-        # and form a dict with the value in _data
-        field_dict = {good_key: getattr(self, good_key) for good_key in fields_list
-            if good_key in self._fields.keys() and getattr(self, good_key) is not None}
-
-        # call sub dict_for_method
-        subok_dict = self._call_for_visibility_on_child(field_dict, field_dict.keys(),
-            visibility=visibility, json_compliant=json_compliant)
-
-        # find all the keys in public_fields that are NOT fields
-        # return a dict with getattr on the obj
-        property_dict =  {key_not_real_field: getattr(self, key_not_real_field)
-                            for key_not_real_field in fields_list
-                            if key_not_real_field not in self._fields.keys()}
-
-        return dict(subok_dict.items() + property_dict.items())
-
     def modified_fields(self):
         """ return a set of fields modified via setters
         """
         return self._modified_fields
 
-    def dict_for_modified_fields(self, validate=True):
-        """ return a dict of fields modified via setters as key with value
-            will raise ValidationError if partial modified data not valid
-            you can force no validation with validate=False
-        """
-        if validate and not self.validate_partial():
-            raise ValidationException()
+    @classmethod
+    def add_view(cls, name, fields):
+        import operator
 
-        return {good_key: getattr(self, good_key) for good_key in self._modified_fields}
+        todo = []
+        for field_name in fields:
+            field = cls._fields.get(field_name, None)
 
+            def create_caller(name):
+                return operator.methodcaller("to_%s" % name)
 
-# Filters
-def rename_field(old_name, new_name, dict_to_filter):
-    if old_name in dict_to_filter:
-        dict_to_filter[new_name] = dict_to_filter[old_name]
-        del dict_to_filter[old_name]
-    return dict_to_filter
+            if isinstance(field, EmbeddedDocumentField):
+                todo.append((field_name, create_caller(name)))
+            elif isinstance(field, ListField) and \
+                    isinstance(field.subfield, EmbeddedDocumentField):
+
+                def create_loop_caller(caller):
+                    def loop(value):
+                        new_value = []
+                        for elem in value:
+                            new_value.append(caller(elem))
+                        return new_value
+                    return loop
+
+                todo.append((field_name, create_loop_caller(create_caller(name))))
+            else:
+                todo.append((field_name, None))
+
+        def create_func(todo):
+            def func(self):
+                elems = []
+                for name, do in todo:
+                    value = getattr(self, name)
+                    if value is not None:
+                        if do:
+                            value = do(value)
+                        elems.append((name, value))
+                return dict(elems)
+            return func
+
+        setattr(cls, "to_%s" % name, create_func(todo))

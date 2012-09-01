@@ -53,15 +53,15 @@ class TestDico(unittest.TestCase):
         class User(dico.Document):
             count = dico.IntegerField(default=1)
 
-            public_fields = ['count']
+        User.add_view("public", ['count'])
 
         user = User()
-        user_dict = user.dict_for_save()
+        user_dict = user.to_dict()
         self.assertIn('count', user_dict)
         self.assertEqual(user.count, 1)
 
         user = User()
-        public_dict = user.dict_for_public()
+        public_dict = user.to_public()
         self.assertIn('count', public_dict)
 
     def test_string_field(self):
@@ -111,7 +111,7 @@ class TestDico(unittest.TestCase):
 
         self.assertIsNone(getattr(user, 'bad_name', None))
 
-    def test_dict_for_save(self):
+    def test_dict(self):
         class User(dico.Document):
             name = dico.StringField()
             count = dico.IntegerField()
@@ -123,8 +123,8 @@ class TestDico(unittest.TestCase):
         # test caching result for validate
         user.validate()
         user.validate()
-        result_dict = user.dict_for_save()
-        result_dict = user.dict_for_save()
+        result_dict = user.to_dict()
+        result_dict = user.to_dict()
 
 
         self.assertIn('name', result_dict)
@@ -132,65 +132,34 @@ class TestDico(unittest.TestCase):
         self.assertEqual(result_dict['name'], 'Bob')
         self.assertEqual(result_dict['count'], 5)
 
-        user = User()
-        user.name = 5
-
-        self.assertRaises(dico.ValidationException, user.dict_for_save)
-
-        user = User()
-        user.name = 'Bob'
-        # test for no raise as count is not required
-        user.dict_for_save()
-
     def test_dict_visibility(self):
         class User(dico.Document):
-            name = dico.StringField()
-
-        user = User()
-        user.name = 'Bob'
-
-        public_dict = user.dict_for_public()
-        owner_dict = user.dict_for_owner()
-        self.assertDictEqual({}, public_dict)
-        self.assertDictEqual({}, owner_dict)
-
-        class User(dico.Document):
-            name = dico.StringField()
             id = dico.IntegerField()
-            public_fields = ['name']
-            owner_fields = ['name', 'id']
+            name = dico.StringField()
 
-        self.assertEqual(User.public_fields, ['name',])
-
-        user = User()
+        User.add_view("public", ["id"])
+        User.add_view("owner", ["id", "name"])
+        user = User(id=1)
         user.name = 'Bob'
-        user.id = 3
-        public_dict = user.dict_for_public()
-        self.assertIn('name', public_dict)
-        owner_dict = user.dict_for_owner()
-        self.assertIn('name', owner_dict)
-        self.assertIn('id', owner_dict)
 
-        user = User()
-        user.name = 4
-        self.assertRaises(dico.ValidationException, user.dict_for_public)
-        self.assertRaises(dico.ValidationException, user.dict_for_owner)
+        public_dict = user.to_public()
+        owner_dict = user.to_owner()
+        self.assertDictEqual({"id": 1}, public_dict)
+        self.assertDictEqual({"id": 1, "name": "Bob"}, owner_dict)
 
         class User(dico.Document):
             name = dico.StringField()
             lastname = dico.StringField()
 
-            public_fields = ['name', 'lastname']
-
         user = User()
         user.name = 'Bob'
 
-        self.assertIn('name', user.dict_for_public())
+        self.assertIn('name', user.to_dict())
         # asked for but not set
-        self.assertNotIn('firstname', user.dict_for_public())
+        self.assertNotIn('firstname', user.to_dict())
 
         user.lastname = 'Spong'
-        self.assertIn('lastname', user.dict_for_public())
+        self.assertIn('lastname', user.to_dict())
 
     def test_modified_fields(self):
         class User(dico.Document):
@@ -204,11 +173,6 @@ class TestDico(unittest.TestCase):
         user.name = 'Bob'
         self.assertIn('name', user.modified_fields())
 
-        modified_dict = user.dict_for_modified_fields()
-        self.assertIn('name', modified_dict)
-        self.assertEqual(modified_dict['name'], 'Bob')
-        self.assertEqual(len(modified_dict.keys()), 1)
-
         user = User(tokens=["test"])
         self.assertNotIn("tokens", user.modified_fields())
 
@@ -221,19 +185,6 @@ class TestDico(unittest.TestCase):
         car.name = 'Peugeot'
         self.assertTrue(car.validate_partial())
         self.assertFalse(car.validate())
-
-        car = Car()
-        car.name = 3
-        error = False
-        try:
-            car.dict_for_modified_fields()
-        except dico.ValidationException:
-            error = True
-        self.assertTrue(error)
-
-        car_dict = car.dict_for_modified_fields(validate=False)
-        self.assertIn('name', car_dict)
-
 
     def test_choices(self):
         class User(dico.Document):
@@ -265,14 +216,14 @@ class TestDico(unittest.TestCase):
             id = dico.IntegerField(required=True, default=answer)
 
         user = User()
-        save_dict = user.dict_for_save()
+        save_dict = user.to_dict()
         self.assertEqual(save_dict['id'], 42)
 
         class User(dico.Document):
             id = dico.IntegerField(default=answer)
 
         user = User()
-        save_dict = user.dict_for_save()
+        save_dict = user.to_dict()
         # it should be there
         # but not on validate_partial
         self.assertIn('id', save_dict)
@@ -301,22 +252,22 @@ class TestDico(unittest.TestCase):
             def age(self):
                 return 42
 
-            public_fields = ['age']
+        User.add_view("public", ["age"])
 
         user = User()
         self.assertEqual(user.age, 42)
 
-        public_dict = user.dict_for_public()
+        public_dict = user.to_public()
         self.assertIn('age', public_dict)
         self.assertEqual(public_dict['age'], 42)
 
         class User(dico.Document):
             id = dico.IntegerField()
 
-            public_fields = ['age']
+        User.add_view("public", ["age"])
 
         user = User()
-        self.assertRaises(KeyError, user.dict_for_public)
+        self.assertRaises(AttributeError, user.to_public)
 
     def test_datetime_field(self):
         class User(dico.Document):
@@ -346,7 +297,7 @@ class TestDico(unittest.TestCase):
 
         user = User()
         id = user.id
-        self.assertEqual(id, user.dict_for_save()['id'])
+        self.assertEqual(id, user.to_dict()['id'])
 
     def test_url_field(self):
         class User(dico.Document):
@@ -458,7 +409,7 @@ class TestDico(unittest.TestCase):
         user = User()
         # ListField are automatically initialized
         self.assertTrue(user.validate())
-        self.assertIn("friends", user.dict_for_save())
+        self.assertIn("friends", user.to_dict())
 
         class User(dico.Document):
             friends = dico.ListField(dico.IntegerField(), min_length=2, max_length=4)
@@ -473,70 +424,6 @@ class TestDico(unittest.TestCase):
         user.friends.append(3)
         self.assertTrue(user.validate())
 
-    def test_pre_save(self):
-        class User(dico.Document):
-            id = dico.IntegerField()
-
-            def rename_id_before_save(filter_dict):
-                if 'id' in filter_dict:
-                    filter_dict['_id'] = filter_dict['id']
-                    del filter_dict['id']
-                return filter_dict
-
-            def add_name(filter_dict):
-                filter_dict['name'] = 'Paule'
-                return filter_dict
-
-            pre_save_filter = [rename_id_before_save, add_name]
-
-        user = User()
-        user.id = 53
-
-        self.assertIn('_id', user.dict_for_save())
-        self.assertIn('name', user.dict_for_save())
-
-        def rename_id_before_save(filter_dict):
-            if 'id' in filter_dict:
-                filter_dict['_id'] = filter_dict['id']
-                del filter_dict['id']
-            return filter_dict
-
-        class User(dico.Document):
-            id = dico.IntegerField()
-
-            pre_save_filter = rename_id_before_save
-
-        user = User()
-        user.id = 53
-        #TODO: allow a direct callable
-        #self.assertIn('_id', user.dict_for_save())
-
-    def test_pre_save_partial(self):
-        class User(dico.Document):
-            id = dico.IntegerField()
-
-            pre_save_filter = [partial(dico.rename_field, 'id', '_id')]
-
-        user = User()
-        user.id = 53
-
-        self.assertIn('_id', user.dict_for_save())
-        self.assertEqual(53, user.dict_for_save()['_id'])
-
-    def test_mongo_example_document(self):
-        class MongoUser(dico.Document):
-            id = dico.mongo.ObjectIdField(aliases=['_id'], required=True, default=ObjectId)
-            name = dico.StringField()
-
-            pre_save_filter = [partial(dico.rename_field, 'id', '_id')]
-            public_fields = ['id', 'name']
-
-        user = MongoUser()
-        user.name = 'Bob'
-
-        save_dict = user.dict_for_save()
-        self.assertIn('_id', save_dict)
-
     def test_slots(self):
         class User(dico.Document):
             id = dico.IntegerField()
@@ -548,14 +435,6 @@ class TestDico(unittest.TestCase):
         except AttributeError:
             error = True
         self.assertTrue(error)
-
-    def test_inside_code(self):
-        class User(dico.Document):
-            id = dico.IntegerField()
-
-        user = User()
-        self.assertEqual({}, user._dict_for_fields('owner'))
-
 
     def test_creation_double_bug(self):
         class TestObj(dico.Document):
@@ -588,7 +467,7 @@ class TestDico(unittest.TestCase):
         user = User()
         user.tokens = [token]
 
-        user.dict_for_save()
+        user.to_dict()
         self.assertIsInstance(user.tokens[0], OAuthToken)
 
     def test_list_embedded(self):
@@ -596,15 +475,15 @@ class TestDico(unittest.TestCase):
             consumer_secret = dico.StringField(required=True, max_length=32)
             active = dico.BooleanField(default=True)
             token_id = dico.mongo.ObjectIdField(required=True, default=ObjectId)
-
-            owner_fields = ['token_id', 'consumer_secret']
+        OAuthToken.add_view("owner", ['token_id', 'consumer_secret'])
+        OAuthToken.add_view("public", [])
 
         class User(dico.Document):
             id = dico.IntegerField()
             tokens = dico.ListField(dico.EmbeddedDocumentField(OAuthToken))
 
-            public_fields = ['tokens']
-            owner_fields = ['tokens']
+        User.add_view("owner", ['tokens'])
+        User.add_view("public", ['tokens'])
 
         user = User()
         user.id = 2
@@ -632,14 +511,14 @@ class TestDico(unittest.TestCase):
         token2.consumer_secret = 'fac470fcd'
         user.tokens.append(token2)
         self.assertEqual(len(user.tokens), 2)
-        user_dict = user.dict_for_save()
+        user_dict = user.to_dict()
         self.assertEqual(len(user_dict['tokens']), 2)
         self.assertIn('consumer_secret', user_dict['tokens'][0])
 
-        public_dict = user.dict_for_public()
+        public_dict = user.to_public()
         self.assertNotIn('consumer_secret', public_dict['tokens'][0])
 
-        owner_dict = user.dict_for_owner()
+        owner_dict = user.to_dict()
         self.assertIn('consumer_secret', owner_dict['tokens'][0])
         self.assertIn('consumer_secret', owner_dict['tokens'][1])
 
@@ -698,12 +577,13 @@ class TestDico(unittest.TestCase):
         class OAuthToken(dico.Document):
             consumer_secret = dico.StringField(required=True, max_length=32)
             active = dico.BooleanField(default=True)
+        OAuthToken.add_view("public", ["consumer_secret"])
 
         class User(dico.Document):
             id = dico.IntegerField()
             token = dico.EmbeddedDocumentField(OAuthToken)
 
-            public_fields = ['token']
+        User.add_view("public", ["token"])
 
         user = User()
         user.token = 3
@@ -715,18 +595,18 @@ class TestDico(unittest.TestCase):
         user.token = OAuthToken(consumer_secret='fac470fcd')
         self.assertTrue(user.validate())
         user.token = OAuthToken(consumer_secret='fac470fcd')
-        user_dict = user.dict_for_save()
+        user_dict = user.to_dict()
         self.assertIn('token', user_dict)
         self.assertIn('consumer_secret', user_dict['token'])
 
         # there is a bug in validate() that modify the content when embedded
         user.token = OAuthToken(consumer_secret='fac470fcd')
         user.validate()
-        user_dict = user.dict_for_save()
+        user_dict = user.to_dict()
         self.assertIn('token', user_dict)
         self.assertIn('consumer_secret', user_dict['token'])
 
-        public_dict = user.dict_for_public()
+        public_dict = user.to_public()
         self.assertIn('token', public_dict)
 
         # ensure modified works for embedded
@@ -780,8 +660,8 @@ class TestDico(unittest.TestCase):
 
         self.assertTrue(user.validate())
 
-        self.assertIn('name', user.dict_for_save())
-        self.assertIn('id', user.dict_for_save())
+        self.assertIn('name', user.to_dict())
+        self.assertIn('id', user.to_dict())
 
     def test_cascade_creation(self):
         class Sub(dico.Document):
@@ -844,7 +724,7 @@ class TestDico(unittest.TestCase):
         user.id = 1
         user.test = False
 
-        self.assertNotIn('test', user.dict_for_save())
+        self.assertNotIn('test', user.to_dict())
 
     def test_empty_set(self):
         class User(dico.Document):
