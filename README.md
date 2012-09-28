@@ -9,13 +9,15 @@ Here are the usual patterns with Dico:
 
 ### Create an object from scratch and validate fields
 
+    from dico import *
+
     class BlogPost(Document):
        id = IntegerField()
        title = StringField(required=True, max_length=40)
        body = StringField(max_length=4096)
        creation_date = DateField(required=True, default=datetime.datetime.utcnow)
 
-	>>> post = BlogPost() 
+    >>> post = BlogPost()
     >>> post.body = 'I'm a new post'
     >>> post.validate()
     False
@@ -24,61 +26,62 @@ Here are the usual patterns with Dico:
     >>> post.validate()
     True
 
-	>>> post2 = BlogPost(title='Hop hop', body='thebody')
+    >>> post2 = BlogPost(title='Hop hop', body='thebody')
 
 ### Store it/Serialize it
 
-    >>> post.dict_for_save()
+    >>> post.to_dict()
     {'id': 45, 'title': 'New post', 'body': "I'm a new post"}
 
-If dict_for_save is called on **not valid data** it will raise a **ValidationException**.
+By default if `to_dict` is called with **invalid data** it will raise a
+**ValidationException**.
 
-### Validate an object populate from existing data and modify it
+### Validate an object populated from existing data and modify it
 
     >>> dict_from_db = {'id': '50000685467ffd11d1000001', 'title': 'A post', 'body': "I'm a post"}
     >>> post = BlogPost(**dict_from_db)
     >>> post.title
     "I'm a title from the DB"
-	
-	>>> post.title = 'New title from cli'
+
+    >>> post.title = 'New title from cli'
     >>> post.validate()
     True
-    
+
 ### See modified fields since creation
 
     >>> post.modified_fields()
     ['title']
 
-	# Usefull for Mongo update
-    >>> post.dict_for_changes()
+    # Usefull for Mongo update
+    >>> post.to_dict(only_modified=True)
     {'title': 'New title from cli'}
 
-Note that dict_for_changes does not contains fields modifier by default=.
+Note that `to_dict` does not contain initially imported fields.
 
 ### Create an object with partial data
 When working with real data, you will not fetch **every** fields from your DB, but still wants validation.
 
-	>>> dict_from_db = {'body': "I'm a post"}
+    >>> dict_from_db = {'body': "I'm a post"}
     >>> post = BlogPost(**dict_from_db)
-	>>> post.validate()
-	False
-	
-	>>> post.validate_partial()
-	True
-	
-	>>> post2.BlogPost()
-	>>> post2.title = 3
-	>>> post2.validate_partial()
-	False
-	>>> post2.title = 'New title'
-	>>> post2.validate_partial()
-	True
+    >>> post.validate()
+    False
+
+    >>> post.validate_partial()
+    True
+
+    >>> post2.BlogPost()
+    >>> post2.title = 3
+    >>> post2.validate_partial()
+    False
+    >>> post2.title = 'New title'
+    >>> post2.validate_partial()
+    True
 
 ### ListField
 A list can contains n elements of a field's type.
 
-    class User(dico.Document):
-        friends = dico.ListField(dico.IntegerField(), min_length=2, max_length=4)
+    class User(Document):
+        friends = ListField(IntegerField(), min_length=2, max_length=4)
 
 ### Field types
 
@@ -93,102 +96,101 @@ A list can contains n elements of a field's type.
 * ListField
 * EmbeddedDocumentField
 
-### Prepare object for export and adjust visibility of fields
+### Prepare object for export and adjust visibility of fields with views
+Views are representation of the document.
 
     class User(Document):
         id = IntegerField(required=True)
         firstname = StringField(required=True, max_length=40)
         email = EmailField()
-    
-		owner_fields = ['firstname', 'email']
-		public_fields = ['firstname']
-		
-	>>> user = User(**dict_from_db)
-	>>> user.dict_for_owner()
-	{'firstname': 'Paul', 'email':'paul_sponge@yahoo.com'}
-	>>> user.dict_for_public()
-	{'firstname': 'Paul'}
-	>> user.dict_for_save()
-	{'firstname': 'Paul', 'email':'paul_sponge@yahoo.com', 'id': 56}
 
-### Aliases for field input
-In mongo the id is called _id so we need a way to make the Document accept it is as id.
+    User.add_view("public", ['firstname'])
+    User.add_view("owner", remove_fields=['id'])
 
-    class User(Document):
-	    id = ObjectIdField(required=True, aliases=['_id'])
-		
-	>>> user = User(_id=ObjectId('50000685467ffd11d1000001'))
-	>>> user.id
-	'50000685467ffd11d1000001'
-	
-### Hooks filters
-There are 3 hooks filter to manipulate data before and after exports, it should be a list of callable to filter
+    >>> user = User(**dict_from_db)
+    >>> user.to_owner()
+    {'firstname': 'Paul', 'email':'paul_sponge@yahoo.com'}
+    >>> user.to_public()
+    {'firstname': 'Paul'}
+    >> user.to_dict()
+    {'firstname': 'Paul', 'email':'paul_sponge@yahoo.com', 'id': 56}
 
-* pre\_save_filter
-* pre\_owner_filter
-* pre\_public_filter
+Note that `to_dict` is a default view containing all document fields.
 
-Here we are renaming firstname field to first_name
+### Import data from different sources
 
     class User(Document):
+        id = IntegerField(required=True)
         firstname = StringField(required=True, max_length=40)
-		def save_filter(dict):
-			dict['first_name] = dict['firstname']
-			del dict['id']
-			return dict	
-		
-		public_fields = ['firstname']
-		pre_save_filter = [save_filter]
-		
-	>>> user = User(firstname='Bob')
-	>>> user.dict_for_save()
-	{'first_name':'Bob'}
-	>>> user.dict_for_public()
-	{'firstname':'Bob'}
+        position = StringField()
 
-You can use partial to call function with arguments
+    User.add_source("owner", ["firstname"])
 
-    from functools import partial
+    dict_from_post = {'firstname': 'Paul', 'position': 'team leader'}
+    >>> user = User.from_owner(**dict_from_post)
+    >>> user.to_dict()
+    {'firstname': 'Paul'}
 
-    class User(dico.Document):
-        id = dico.IntegerField()
-        def rename_field(old_field, new_field, filter_dict):
-        	if old_field in filter_dict:
-        	    filter_dict[new_field] = filter_dict[old_field]
-        	    del filter_dict[old_field]
-        	return filter_dict
+The document constructor makes use of the `from_dict` method.
 
-        pre_save_filter = [partial(rename_field, 'id', '_id')]
-        public_fields = ['id', 'name']
+### Filters
+Filters manipulate data before the import and after the export.
 
-	
+Here we are renaming firstname field to `first_name`
+
+    class User(Document):
+        id = IntegerField()
+        firstname = StringField(required=True, max_length=40)
+
+        @staticmethod
+        def save_filter(data):
+            data['first_name] = data['firstname']
+            del data['id']
+            return data
+
+    User.add_view("save", filters="save_filter")
+
+    >>> user = User(firstname='Bob')
+    >>> user.to_save()
+    {'first_name':'Bob'}
+    >>> user.to_dict()
+    {'firstname':'Bob'}
+
+There is a shortchut for creating renaming filter called `rename_field`.
+
+    class User(Document):
+        id = IntegerField()
+        firstname = StringField(required=True, max_length=40)
+
+    User.add_view("save", filters=rename_field('id', '_id'))
+
 ### @properties visibility
 Properties are suitable for serialization
 
     class User(Document):
-		firstname = StringField(required=True, max_length=40)
-		name = StringField(required=True, max_length=40)
-		
-		@properties
-		def full_name(self):
-			return firstname + ' ' + name
-			
-		public_fields = ['full_name']
-		
-		>>> user.dict_for_public()
-		{'full_name': 'Sponge Bob'}
+        firstname = StringField(required=True, max_length=40)
+        lastname = StringField(required=True, max_length=40)
+
+        @properties
+        def full_name(self):
+            return "%s %s" % (self.firstname, self.lastname)
+
+    User.add_view("public", ["full_name"])
+
+    >>> user.to_public()
+    {'full_name': 'Sponge Bob'}
 
 ### Embedded fields
 You may embed document in document, directly or within a list
 
-    class OAuthToken(dico.Document):
-        consumer_secret = dico.StringField(required=True, max_length=32)
-        active = dico.BooleanField(default=True)
-        token_id = dico.mongo.ObjectIdField(required=True, default=ObjectId)
+    class OAuthToken(Document):
+        consumer_secret = StringField(required=True, max_length=32)
+        active = BooleanField(default=True)
+        token_id = mongo.ObjectIdField(required=True, default=ObjectId)
 
-    class User(dico.Document):
-        id = dico.IntegerField()
-        token = dico.EmbeddedDocumentField(OAuthToken)
+    class User(Document):
+        id = IntegerField()
+        token = EmbeddedDocumentField(OAuthToken)
 
     >>> user = User()
     >>> user.token = 3
@@ -202,14 +204,16 @@ You may embed document in document, directly or within a list
     >>> user.validate()
     False
 
-    class OAuthToken(dico.Document):
-        consumer_secret = dico.StringField(required=True, max_length=32)
-        active = dico.BooleanField(default=True)
+    import dico.mongo
+
+    class OAuthToken(Document):
+        consumer_secret = StringField(required=True, max_length=32)
+        active = BooleanField(default=True)
         token_id = dico.mongo.ObjectIdField(required=True, default=ObjectId)
 
-    class User(dico.Document):
-        id = dico.IntegerField()
-        tokens = dico.ListField(dico.EmbeddedDocumentField(OAuthToken))
+    class User(Document):
+        id = IntegerField()
+        tokens = ListField(EmbeddedDocumentField(OAuthToken))
 
     >>> user = User()
     >>> user.id = 2
@@ -222,13 +226,13 @@ You may embed document in document, directly or within a list
 
     # cascade recreate obj
 
-    class OAuthToken(dico.Document):
-        consumer_secret = dico.StringField()
-        id = dico.IntegerField()
+    class OAuthToken(Document):
+        consumer_secret = StringField()
+        id = IntegerField()
 
-    class User(dico.Document):
-        id = dico.IntegerField()
-        tokens = dico.ListField(dico.EmbeddedDocumentField(OAuthToken))
+    class User(Document):
+        id = IntegerField()
+        tokens = ListField(EmbeddedDocumentField(OAuthToken))
 
     >>> user_dict = {'id':1, 'tokens':[
             {'consumer_secret':'3fbc81fa', 'id':453245},
@@ -239,76 +243,70 @@ You may embed document in document, directly or within a list
 
     >>> user.tokens
     [<__main__.OAuthToken object at 0x109b3b390>, <__main__.OAuthToken object at 0x109b3b2c0>]
-    
+
 ### Example usage with mongo
 We know we want to update only some fields firstname and email, so we fetch the object with no field, update our fields then update, later we create a new user and save it.
-Not the rename_field function which is provided in Dico as shortcut.
 
     class User(Document):
-		id = ObjectIdField(default=ObjectId(), required=True, aliases=['_id'])
-		firstname = StringField(required=True, max_length=40)
+        id = ObjectIdField(default=ObjectId(), required=True, aliases=['_id'])
+        firstname = StringField(required=True, max_length=40)
         email = EmailField()
 
-        pre_save_filter = [partial(dico.rename_field, 'id', '_id')]
-        owner_fields = ['firstname', 'id', 'email']
-	    public_fields = ['firstname', 'id']
-		
-	>>> user_dict = db.user.find_one({'email':'bob@sponge.com'}, [])
-	>>> user = User(**user_dict)
-	>>> user.firstname = 'Bob'
-	>>> user.email = 'bob@yahoo.com'
-	>>> user.validate_partial()
-	True
-	>>> db.user.update({'_id': user.id}, user.dict_for_modified_fields())
-	
-	>>> user = User()
-	>>> user.email = 'sponge@bob.com'
-	>>> user.validate()
-	True
-	>>> db.user.save(user.dict_for_save())
-	
-	# note this trick here we are reusing the public fields list from the user object to query only
-	# this specific fields and make queries faster
-	>>> user_dict = db.user.find_one({'email':'bob@yahoo.com', User.public_fields)
-	>>> user = User(**user_dict)
-	>>> user.dict_for_public()
-	{'id':'50000685467ffd11d1000001', 'firstname':'Bob'}
-        
+    User.add_source("db", filters=rename_field('_id', 'id'))
+
+    User.add_view("db", filters=rename_field('id', '_id'))
+    User.add_view("public", remove_fields=['email'])
+
+    >>> user_dict = db.user.find_one({'email':'bob@sponge.com'})
+    >>> user = User.from_db(**user_dict)
+    >>> user.firstname = 'Bob'
+    >>> user.email = 'bob@yahoo.com'
+    >>> user.validate_partial()
+    True
+    >>> db.user.update({'_id': user.id}, user.to_db(only_modified=True))
+
+    >>> user = User()
+    >>> user.email = 'sponge@bob.com'
+    >>> user.validate()
+    True
+    >>> db.user.save(user.to_db())
+
+    # note this trick here we are reusing the public fields list from the user object to query only
+    # this specific fields and make queries faster
+    >>> user_dict = db.user.find_one({'email':'bob@yahoo.com'}, User.public_view_fields)
+    >>> user = User(**user_dict)
+    >>> user.to_public()
+    {'id':'50000685467ffd11d1000001', 'firstname':'Bob'}
+
 ## Features
 
-* required fields are checked for full object validation, but individual fields can be tested with validate_partial
-* To dict for owner (eg user object, the owner can see the fields email)
-* To dict for public (eg user object, public can't see the fields email)
-* To dict for mongo db or sql saving
-* Transform field rename field before exporting, example: remove microseconds before public serialization on a datefield (as JSON cls hooks) or to transform id to \_id before serialize
-* multiple filters, pre save filter, pre owner filter, pre public filter
+* required fields are checked for full object validation, but individual fields can be tested with `validate_partial`
+* Document export using views (`to_dict` is the default view)
+* Document import using sources (`from_dict` is the default source, also used by the constructor)
+* Transform fields during import or export with the filter builder `format_field`
+* Rename fields during import or export with the filter builder `rename_field`
 * Track modified fields, for example to use update only changed fields with mongo
-* Can serialize properties to owner and public dict
+* Can serialize properties in views
 * partial = not all fields, can create an object with only some fields you want to export (to avoid select * )
 * Regexp compiled only one time
-* use \_\_slots\_\_ for memory optimization and to get on AttributeError on typo
+* use `__slots__` for memory optimization and to get on AttributeError on typo
 * cascade creation of embedded oject
 
 ## Ideas
-* Convert all fields to json acceptable type, (for use with ujson directly), a param in dict\_for\_public(json_convert=True) ?
-* Use it as form validation? (I'm not sure I need this: my REST views are not exactly mapped to my objects)
-* Can external user modify this field? Eg id
 * Returns a representation of this Dico class as a JSON schema. (nizox)
-* Post save commit() reset modified fields
 
 ## TODO
-* Implements json_compliant
-* errors explanation
-* the continue in _validate_fields does not show up in coverage
-* in _apply_filters if call directly a callable not in a list arg error
+* Implements json compliant filters
+* errors details
+* the continue in `_validate_fields` does not show up in coverage
 * update management for mongo ? (it will become a real ORM)
 * how to deal with filters while subclassing ?
 
 ## Differences with dictshield
 * dictshield raise ValueError while setting a property on a document if the data does not match the field, makes validate() useless
 * dictshield allows unknown properties to be set
-* dictshield does not use __slots__
-* dictshield is more complete but complexe
+* dictshield does not use `__slots__`
+* dictshield is more complete but complex
 * dictshield has separates files in packages, makes import boring
 
 

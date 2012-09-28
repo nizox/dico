@@ -1,6 +1,7 @@
 import re
 import datetime
 import socket
+import operator
 
 URL_REGEX_COMPILED = re.compile(
     r'^https?://'
@@ -30,20 +31,15 @@ class ValidationException(Exception):
 
 
 class BaseField(object):
-    def __init__(self, default=None, required=False, choices=None, aliases=None):
+    def __init__(self, default=None, required=False, choices=None):
         """ the BaseField class for all Document's field
         """
         self.default = default
         self.is_required = required
         self.choices = choices
-        self.aliases = aliases
 
     def _register_document(self, document, field_name):
         self.field_name = field_name
-        # test for aliases
-        if self.aliases is not None:
-            for alias in self.aliases:
-                document._aliases.append((alias, field_name))
 
     def _changed(self, instance):
         """ notify parent's document for changes """
@@ -310,7 +306,6 @@ class DocumentMetaClass(type):
         klass = type.__new__(cls, name, bases, newattrs)
 
         if not meta:
-            klass._aliases = []
             for field_name, field in klass._fields.items():
                 field._register_document(klass, field_name)
 
@@ -319,8 +314,9 @@ class DocumentMetaClass(type):
                     base_fields = base._fields.copy()
                     base_fields.update(klass._fields)
                     klass._fields = base_fields
-                    klass._aliases += base._aliases
-            klass.add_view("dict", klass._fields.keys())
+
+            klass.add_source("dict")
+            klass.add_view("dict")
         return klass
 
 
@@ -339,26 +335,6 @@ class Document(object):
         self._parent_field = parent_field
 
         self.update_from_dict(values, changed=False)
-
-    def update_from_dict(self, values, changed=True):
-        # TODO: this check should be done during __new__
-        for alias, key in self._aliases:
-            if alias in values:
-                if key in values:
-                    raise ValueError("The field %s overrides this alias %s" %
-                        (key, alias))
-                values[key] = values[alias]
-                del values[alias]
-
-        for key, field in self._fields.items():
-            value = values.get(key, None)
-
-            if value is not None:
-                if hasattr(field, "_prepare"):
-                    value = field._prepare(self, value)
-                object.__setattr__(self, key, value)
-                if changed:
-                    field._changed(self)
 
     def __getattr__(self, name):
         field = self._fields.get(name, None)
@@ -442,12 +418,88 @@ class Document(object):
         return self._modified_fields
 
     @classmethod
-    def add_view(cls, name, fields):
-        import operator
+    def make_filters(cls, filters):
+        if filters is None:
+            filters = []
+        else:
+            try:
+                iter(filters)
+            except TypeError:
+                filters = [filters]
+
+        new_filters = []
+        for f in filters:
+            if isinstance(f, basestring):
+                f = getattr(cls, f)
+            # reverse the filters
+            new_filters.insert(0, f)
+
+        def inner(data):
+            for f in new_filters:
+                data = f(data)
+            return data
+        return inner
+
+    @classmethod
+    def add_source(cls, name, keep_fields=None, remove_fields=None,
+            filters=None):
+
+        if keep_fields is not None:
+            fields = map(lambda x: (x, cls._fields.get(x)), keep_fields)
+        elif remove_fields is not None:
+            fields = [(name, field) for name, field in cls._fields
+                    if name not in remove_fields]
+        else:
+            fields = cls._fields.items()
+
+        def create_update(fields, filters):
+            def update(self, data, changed=True):
+                data = filters(data)
+                for name, field in fields:
+                    value = data.get(name)
+
+                    if value is not None:
+                        if hasattr(field, "_prepare"):
+                            value = field._prepare(self, value)
+                        object.__setattr__(self, name, value)
+                        if changed:
+                            field._changed(self)
+                return self
+            return update
+
+        def create_source(name):
+            update = operator.attrgetter("update_from_%s" % name)
+
+            def inner(cls, **kwargs):
+                instance = cls()
+                return update(instance)(kwargs, changed=False)
+            return classmethod(inner)
+
+        # the field list should be immutable
+        setattr(cls, "%s_source_fields" % name, map(lambda x: x[0], fields))
+        setattr(cls, "update_from_%s" % name, create_update(fields,
+            cls.make_filters(filters)))
+        setattr(cls, "from_%s" % name, create_source(name))
+
+    @classmethod
+    def add_view(cls, name, keep_fields=None, remove_fields=None,
+            filters=None):
+        """A view is a possibly modified representation of the document as a
+        python dictionnary. You can alter the representation by specifying a
+        list of filters executed in the given order over the dictionnary
+        generated from keep_fields or remove_fields."""
+
+        if keep_fields is not None:
+            fields = keep_fields
+        elif remove_fields is not None:
+            fields = [field for field in cls._fields.keys()
+                    if field not in remove_fields]
+        else:
+            fields = cls._fields.keys()
 
         todo = []
         for field_name in fields:
-            field = cls._fields.get(field_name, None)
+            field = cls._fields.get(field_name)
 
             def create_caller(name):
                 return operator.methodcaller("to_%s" % name)
@@ -465,20 +517,56 @@ class Document(object):
                         return new_value
                     return loop
 
-                todo.append((field_name, create_loop_caller(create_caller(name))))
+                todo.append((field_name,
+                    create_loop_caller(create_caller(name))))
             else:
                 todo.append((field_name, None))
 
-        def create_func(todo):
-            def func(self):
+        def create_view(todo, filters):
+            def view(self, only_modified=False, validate=True):
+                """This inner function executes previously created plan to
+                construct a view of the document."""
+                if validate and not self.validate():
+                    raise ValidationException
+
+                if only_modified:
+                    todo_specialized = [(name, do) for name, do in todo
+                            if name in self.modified_fields()]
+                else:
+                    todo_specialized = todo
+
                 elems = []
-                for name, do in todo:
+                for name, do in todo_specialized:
                     value = getattr(self, name)
                     if value is not None:
                         if do:
                             value = do(value)
                         elems.append((name, value))
-                return dict(elems)
-            return func
+                return filters(dict(elems))
+            return view
 
-        setattr(cls, "to_%s" % name, create_func(todo))
+        # the view field list should be immutable
+        setattr(cls, "%s_view_fields" % name, fields)
+        setattr(cls, "to_%s" % name, create_view(todo,
+            cls.make_filters(filters)))
+
+
+def rename_field(old_name, new_name):
+    """Make a filter renaming `old_name` to `new_name`."""
+    def _rename_field(data):
+        elem = data.pop(old_name, None)
+        if elem is not None:
+            data[new_name] = elem
+        return data
+    return _rename_field
+
+
+def format_field(name, func):
+    """Make a filter replacing the content of the field `name` by the result of
+    the function func."""
+    def _format_field(data):
+        elem = data.get(name)
+        if elem is not None:
+            data[name] = func(elem)
+        return data
+    return _format_field

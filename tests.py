@@ -1,10 +1,10 @@
 import dico
 import unittest
 import re
-import datetime
 import dico.mongo
+
+from datetime import datetime
 from bson.objectid import ObjectId
-import random
 from functools import partial
 
 class TestDico(unittest.TestCase):
@@ -111,7 +111,7 @@ class TestDico(unittest.TestCase):
 
         self.assertIsNone(getattr(user, 'bad_name', None))
 
-    def test_dict(self):
+    def test_view(self):
         class User(dico.Document):
             name = dico.StringField()
             count = dico.IntegerField()
@@ -119,6 +119,9 @@ class TestDico(unittest.TestCase):
         user = User()
         user.name = 'Bob'
         user.count = 5
+
+        self.assertIn("name", User.dict_view_fields)
+        self.assertIn("count", User.dict_view_fields)
 
         # test caching result for validate
         user.validate()
@@ -132,13 +135,23 @@ class TestDico(unittest.TestCase):
         self.assertEqual(result_dict['name'], 'Bob')
         self.assertEqual(result_dict['count'], 5)
 
+        user = User()
+        user.name = 5
+
+        self.assertRaises(dico.ValidationException, user.to_dict)
+
+        user = User()
+        user.name = 'Bob'
+        # test for no raise as count is not required
+        user.to_dict()
+
     def test_dict_visibility(self):
         class User(dico.Document):
             id = dico.IntegerField()
             name = dico.StringField()
 
-        User.add_view("public", ["id"])
-        User.add_view("owner", ["id", "name"])
+        User.add_view("public", remove_fields=["name"])
+        User.add_view("owner")
         user = User(id=1)
         user.name = 'Bob'
 
@@ -173,6 +186,11 @@ class TestDico(unittest.TestCase):
         user.name = 'Bob'
         self.assertIn('name', user.modified_fields())
 
+        modified_dict = user.to_dict(only_modified=True)
+        self.assertIn('name', modified_dict)
+        self.assertEqual(modified_dict['name'], 'Bob')
+        self.assertEqual(len(modified_dict.keys()), 1)
+
         user = User(tokens=["test"])
         self.assertNotIn("tokens", user.modified_fields())
 
@@ -185,6 +203,15 @@ class TestDico(unittest.TestCase):
         car.name = 'Peugeot'
         self.assertTrue(car.validate_partial())
         self.assertFalse(car.validate())
+
+        car = Car()
+        car.name = 3
+
+        self.assertRaises(dico.ValidationException, partial(car.to_dict,
+            only_modified=True))
+
+        car_dict = car.to_dict(validate=False)
+        self.assertIn('name', car_dict)
 
     def test_choices(self):
         class User(dico.Document):
@@ -271,12 +298,12 @@ class TestDico(unittest.TestCase):
 
     def test_datetime_field(self):
         class User(dico.Document):
-            creation_date = dico.DateTimeField(default=datetime.datetime.utcnow)
+            creation_date = dico.DateTimeField(default=datetime.utcnow)
 
         user = User()
-        self.assertTrue(isinstance(user.creation_date, datetime.datetime))
+        self.assertTrue(isinstance(user.creation_date, datetime))
 
-        user.creation_date = datetime.datetime.utcnow()
+        user.creation_date = datetime.utcnow()
         self.assertTrue(user.validate())
         user.creation_date = 3
         self.assertFalse(user.validate())
@@ -325,25 +352,35 @@ class TestDico(unittest.TestCase):
         user.email = '123456789012345678901234567890@spong.com'
         self.assertFalse(user.validate())
 
-    def test_alias(self):
+    def test_source(self):
         class User(dico.Document):
-            id = dico.IntegerField(aliases=['_id', 'aid'])
+            id = dico.IntegerField()
 
-        user = User(_id=2)
+        User.add_source("db", filters=[dico.rename_field('_id', 'id'),
+            dico.rename_field('aid', 'id')])
+
+        self.assertIn("id", User.db_source_fields)
+
+        user = User.from_db(_id=2)
         self.assertEqual(user.id, 2)
 
-        user = User(aid=4)
+        user = user.update_from_db({'aid': 4})
+        self.assertIn("id", user.modified_fields())
         self.assertEqual(user.id, 4)
 
         class User(dico.Document):
-            id = dico.IntegerField(aliases=['_id', 'aid'])
+            id = dico.IntegerField()
+            name = dico.StringField()
+            birthday = dico.DateTimeField()
 
-        error = False
-        try:
-            User(**{'id': 1, 'aid': 2 })
-        except  ValueError:
-            error = True
-        self.assertTrue(error)
+        User.add_source("public", ["name", "birthday"],
+              filters=dico.format_field("birthday", datetime.fromtimestamp))
+
+        user = User.from_public(id=1, name="Angel", birthday=344646000)
+
+        self.assertNotEqual(user.id, 1)
+        self.assertEqual(user.name, "Angel")
+        self.assertEqual(user.birthday, datetime(1980, 12, 3))
 
     def test_float_field(self):
         class User(dico.Document):
@@ -424,6 +461,39 @@ class TestDico(unittest.TestCase):
         user.friends.append(3)
         self.assertTrue(user.validate())
 
+    def test_filters(self):
+        class User(dico.Document):
+            id = dico.IntegerField()
+
+            @staticmethod
+            def rename_id_before_save(filter_dict):
+                if 'id' in filter_dict:
+                    filter_dict['_id'] = filter_dict['id']
+                    del filter_dict['id']
+                return filter_dict
+
+            @classmethod
+            def add_name(cls, filter_dict):
+                filter_dict['name'] = 'Paule'
+                return filter_dict
+
+        User.add_view("save", filters=["rename_id_before_save", User.add_name])
+
+        user = User()
+        user.id = 53
+
+        self.assertIn('_id', user.to_save())
+        self.assertIn('name', user.to_save())
+
+        class User(dico.Document):
+            id = dico.IntegerField()
+
+        User.add_view("save", filters=dico.rename_field('id', '_id'))
+
+        user = User()
+        user.id = 53
+        self.assertIn('_id', user.to_save())
+
     def test_slots(self):
         class User(dico.Document):
             id = dico.IntegerField()
@@ -452,14 +522,13 @@ class TestDico(unittest.TestCase):
             active = dico.BooleanField(default=True)
             token_id = dico.mongo.ObjectIdField(required=True, default=ObjectId)
 
-            owner_field = ['token_id', 'consumer_secret']
+        OAuthToken.add_view("owner", remove_fields=['active'])
 
         class User(dico.Document):
             id = dico.IntegerField()
             tokens = dico.ListField(dico.EmbeddedDocumentField(OAuthToken))
 
-            #public_fields = ['tokens']
-            owner_fields = ['tokens']
+        User.add_view("owner", ['tokens'])
 
         token = OAuthToken()
         token.consumer_secret = 'fac470fcd'
@@ -467,7 +536,7 @@ class TestDico(unittest.TestCase):
         user = User()
         user.tokens = [token]
 
-        user.to_dict()
+        user.to_owner()
         self.assertIsInstance(user.tokens[0], OAuthToken)
 
     def test_list_embedded(self):
