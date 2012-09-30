@@ -60,12 +60,14 @@ class EmbeddedDocumentField(BaseField):
 
         super(EmbeddedDocumentField, self).__init__(**kwargs)
 
-    def _prepare(self, instance, value):
+    def _prepare(self, instance, value, source="dict"):
         """ we instantiate the dict to an object if needed
             and set the parent
         """
         if isinstance(value, dict):
-            value = self.field_type(parent=instance, parent_field=self, **value)
+            value = getattr(self.field_type, "from_%s" % source)(**value)
+            value._parent = instance
+            value._parent_field = self
         if isinstance(value, self.field_type):
             value._parent_field = self
         return value
@@ -188,7 +190,7 @@ class ListField(BaseField):
                 return False
         return True
 
-    def _prepare(self, instance, value):
+    def _prepare(self, instance, value, source="dict"):
         """ we set the parent for each element
             and set a NotifyParentList in place of a list
         """
@@ -200,7 +202,7 @@ class ListField(BaseField):
             if hasattr(self.subfield, "_prepare"):
                 obj_list = []
                 for obj in value:
-                    obj = self.subfield._prepare(instance, obj)
+                    obj = self.subfield._prepare(instance, obj, source=source)
                     if obj:
                         obj_list.append(obj)
                 value = obj_list
@@ -327,12 +329,12 @@ class Document(object):
 
     _meta = True
 
-    def __init__(self, parent=None, parent_field=None, **values):
+    def __init__(self, **values):
         self._modified_fields = set()
         # optimization to avoid double validate() if nothing has changed
         self._is_valid = False
-        self._parent = parent
-        self._parent_field = parent_field
+        self._parent = None
+        self._parent_field = None
 
         self.update_from_dict(values, changed=False)
 
@@ -455,19 +457,20 @@ class Document(object):
         def create_update(fields, filters):
             def update(self, data, changed=True):
                 data = filters(data)
-                for name, field in fields:
-                    value = data.get(name)
+                for key, field in fields:
+                    value = data.get(key)
 
                     if value is not None:
                         if hasattr(field, "_prepare"):
-                            value = field._prepare(self, value)
-                        object.__setattr__(self, name, value)
+                            value = field._prepare(self, value,
+                                    source=name)
+                        object.__setattr__(self, key, value)
                         if changed:
                             field._changed(self)
                 return self
             return update
 
-        def create_source(name):
+        def create_source():
             update = operator.attrgetter("update_from_%s" % name)
 
             def inner(cls, **kwargs):
@@ -479,7 +482,7 @@ class Document(object):
         setattr(cls, "%s_source_fields" % name, map(lambda x: x[0], fields))
         setattr(cls, "update_from_%s" % name, create_update(fields,
             cls.make_filters(filters)))
-        setattr(cls, "from_%s" % name, create_source(name))
+        setattr(cls, "from_%s" % name, create_source())
 
     @classmethod
     def add_view(cls, name, keep_fields=None, remove_fields=None,
