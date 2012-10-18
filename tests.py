@@ -356,8 +356,13 @@ class TestDico(unittest.TestCase):
         class User(dico.Document):
             id = dico.IntegerField()
 
-        User.add_source("db", filters=[dico.rename_field('_id', 'id'),
-            dico.rename_field('aid', 'id')])
+            @staticmethod
+            def rename_id(data_dict):
+                data_dict = dico.rename_field('_id', 'id')(data_dict)
+                data_dict = dico.rename_field('aid', 'id')(data_dict)
+                return data_dict
+
+        User.add_source("db", filter="rename_id")
 
         self.assertIn("id", User.db_source_fields)
 
@@ -374,7 +379,7 @@ class TestDico(unittest.TestCase):
             birthday = dico.DateTimeField()
 
         User.add_source("public", ["name", "birthday"],
-              filters=dico.format_field("birthday", datetime.fromtimestamp))
+              filter=dico.format_field("birthday", datetime.fromtimestamp))
 
         user = User.from_public(id=1, name="Angel", birthday=344646000)
 
@@ -461,23 +466,22 @@ class TestDico(unittest.TestCase):
         user.friends.append(3)
         self.assertTrue(user.validate())
 
-    def test_filters(self):
+    def test_filter(self):
         class User(dico.Document):
             id = dico.IntegerField()
 
-            @staticmethod
-            def rename_id_before_save(filter_dict):
+            @classmethod
+            def rename_id(cls, filter_dict):
                 if 'id' in filter_dict:
                     filter_dict['_id'] = filter_dict['id']
                     del filter_dict['id']
                 return filter_dict
 
-            @classmethod
-            def add_name(cls, filter_dict):
+            def before_save(self, filter_dict):
                 filter_dict['name'] = 'Paule'
-                return filter_dict
+                return self.rename_id(filter_dict)
 
-        User.add_view("save", filters=["rename_id_before_save", User.add_name])
+        User.add_view("save", filter="before_save")
 
         user = User()
         user.id = 53
@@ -488,7 +492,7 @@ class TestDico(unittest.TestCase):
         class User(dico.Document):
             id = dico.IntegerField()
 
-        User.add_view("save", filters=dico.rename_field('id', '_id'))
+        User.add_view("save", filter=dico.rename_field('id', '_id'))
 
         user = User()
         user.id = 53

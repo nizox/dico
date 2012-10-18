@@ -420,31 +420,8 @@ class Document(object):
         return self._modified_fields
 
     @classmethod
-    def make_filters(cls, filters):
-        if filters is None:
-            filters = []
-        else:
-            try:
-                iter(filters)
-            except TypeError:
-                filters = [filters]
-
-        new_filters = []
-        for f in filters:
-            if isinstance(f, basestring):
-                f = getattr(cls, f)
-            # reverse the filters
-            new_filters.insert(0, f)
-
-        def inner(data):
-            for f in new_filters:
-                data = f(data)
-            return data
-        return inner
-
-    @classmethod
     def add_source(cls, name, keep_fields=None, remove_fields=None,
-            filters=None):
+            filter=None):
 
         if keep_fields is not None:
             fields = map(lambda x: (x, cls._fields.get(x)), keep_fields)
@@ -454,39 +431,37 @@ class Document(object):
         else:
             fields = cls._fields.items()
 
-        def create_update(fields, filters):
-            def update(self, data, changed=True):
-                data = filters(data)
-                for key, field in fields:
-                    value = data.get(key)
+        def update(self, data, changed=True):
+            if callable(filter):
+                data = filter(data)
+            elif isinstance(filter, basestring):
+                data = getattr(self, filter)(data)
+            for key, field in fields:
+                value = data.get(key)
 
-                    if value is not None:
-                        if hasattr(field, "_prepare"):
-                            value = field._prepare(self, value,
-                                    source=name)
-                        object.__setattr__(self, key, value)
-                        if changed:
-                            field._changed(self)
-                return self
-            return update
+                if value is not None:
+                    if hasattr(field, "_prepare"):
+                        value = field._prepare(self, value,
+                                source=name)
+                    object.__setattr__(self, key, value)
+                    if changed:
+                        field._changed(self)
+            return self
 
-        def create_source():
-            update = operator.attrgetter("update_from_%s" % name)
+        update_caller = operator.attrgetter("update_from_%s" % name)
 
-            def inner(cls, **kwargs):
-                instance = cls()
-                return update(instance)(kwargs, changed=False)
-            return classmethod(inner)
+        def inner(cls, **kwargs):
+            instance = cls()
+            return update_caller(instance)(kwargs, changed=False)
 
         # the field list should be immutable
         setattr(cls, "%s_source_fields" % name, map(lambda x: x[0], fields))
-        setattr(cls, "update_from_%s" % name, create_update(fields,
-            cls.make_filters(filters)))
-        setattr(cls, "from_%s" % name, create_source())
+        setattr(cls, "update_from_%s" % name, update)
+        setattr(cls, "from_%s" % name, classmethod(inner))
 
     @classmethod
     def add_view(cls, name, keep_fields=None, remove_fields=None,
-            filters=None):
+            filter=None):
         """A view is a possibly modified representation of the document as a
         python dictionnary. You can alter the representation by specifying a
         list of filters executed in the given order over the dictionnary
@@ -525,33 +500,35 @@ class Document(object):
             else:
                 todo.append((field_name, None))
 
-        def create_view(todo, filters):
-            def view(self, only_modified=False, validate=True):
-                """This inner function executes previously created plan to
-                construct a view of the document."""
-                if validate and not self.validate():
-                    raise ValidationException
+        def view(self, only_modified=False, validate=True):
+            """This inner function executes previously created plan to
+            construct a view of the document."""
+            if validate and not self.validate():
+                raise ValidationException
 
-                if only_modified:
-                    todo_specialized = [(name, do) for name, do in todo
-                            if name in self.modified_fields()]
-                else:
-                    todo_specialized = todo
+            if only_modified:
+                todo_specialized = [(key, do) for key, do in todo
+                        if key in self.modified_fields()]
+            else:
+                todo_specialized = todo
 
-                elems = []
-                for name, do in todo_specialized:
-                    value = getattr(self, name)
-                    if value is not None:
-                        if do:
-                            value = do(value)
-                        elems.append((name, value))
-                return filters(dict(elems))
-            return view
+            elems = []
+            for key, do in todo_specialized:
+                value = getattr(self, key)
+                if value is not None:
+                    if do:
+                        value = do(value)
+                    elems.append((key, value))
+            data = dict(elems)
+            if callable(filter):
+                data = filter(data)
+            elif isinstance(filter, basestring):
+                data = getattr(self, filter)(data)
+            return data
 
         # the view field list should be immutable
         setattr(cls, "%s_view_fields" % name, fields)
-        setattr(cls, "to_%s" % name, create_view(todo,
-            cls.make_filters(filters)))
+        setattr(cls, "to_%s" % name, view)
 
 
 def rename_field(old_name, new_name):
