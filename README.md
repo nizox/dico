@@ -33,7 +33,7 @@ Here are the usual patterns with Dico:
     >>> post.to_dict()
     {'id': 45, 'title': 'New post', 'body': "I'm a new post"}
 
-By default if `to_dict` is called with **invalid data** it will raise a
+If ``to_dict`` is called with **invalid data** it will raise a
 **ValidationException**.
 
 ### Validate an object populated from existing data and modify it
@@ -56,7 +56,7 @@ By default if `to_dict` is called with **invalid data** it will raise a
     >>> post.to_dict(only_modified=True)
     {'title': 'New title from cli'}
 
-Note that `to_dict` does not contain initially imported fields.
+Note that the result does not contain initially imported fields.
 
 ### Create an object with partial data
 When working with real data, you will not fetch **every** fields from your DB, but still wants validation.
@@ -115,7 +115,8 @@ Views are representation of the document.
     >> user.to_dict()
     {'firstname': 'Paul', 'email':'paul_sponge@yahoo.com', 'id': 56}
 
-Note that `to_dict` is a default view containing all document fields.
+Note that ``to_dict`` is the default view method and returns the full
+representation of the document.
 
 ### Import data from different sources
 
@@ -126,17 +127,31 @@ Note that `to_dict` is a default view containing all document fields.
 
     User.add_source("owner", ["firstname"])
 
-    dict_from_post = {'firstname': 'Paul', 'position': 'team leader'}
+    >>> dict_from_post = {'firstname': 'Paul', 'position': 'team leader'}
     >>> user = User.from_owner(**dict_from_post)
     >>> user.to_dict()
     {'firstname': 'Paul'}
+    >>> dict_from_database = {'id': 12, 'firstname': 'Jean'}
+    >>> user = User.from_dict(**dict_from_database)
+    >>> user.to_dict()
+    {'id': 12, 'firstname': 'Jean'}
 
-The document constructor makes use of the `from_dict` method.
+Note that ``from_dict`` is the default source method and imports every document
+fields.
 
-### Filters
-Filters manipulate data before the import and after the export.
+### Update a document for a source
 
-Here we are renaming firstname field to `first_name`
+    User.add_source("admin", ["firstname", "position"])
+
+    >>> dict_from_admin = {'position': 'dev'}
+    >>> user.update_from_admin(dict_from_api)
+    >>> user.to_dict()
+    {'id': 12, 'firstname': 'Jean', 'position': 'dev'}
+
+### Filter
+A Filter manipulates data before the import and after the export.
+
+Here we are renaming *firstname* field to *first_name*::
 
     class User(Document):
         id = IntegerField()
@@ -148,7 +163,7 @@ Here we are renaming firstname field to `first_name`
             del data['id']
             return data
 
-    User.add_view("save", filters="save_filter")
+    User.add_view("save", filter="save_filter")
 
     >>> user = User(firstname='Bob')
     >>> user.to_save()
@@ -156,13 +171,14 @@ Here we are renaming firstname field to `first_name`
     >>> user.to_dict()
     {'firstname':'Bob'}
 
-There is a shortchut for creating renaming filter called `rename_field`.
+There is a shortchut funcion for creating renaming filter called
+``rename_field``.
 
     class User(Document):
         id = IntegerField()
         firstname = StringField(required=True, max_length=40)
 
-    User.add_view("save", filters=rename_field('id', '_id'))
+    User.add_view("save", filter=rename_field('id', '_id'))
 
 ### @properties visibility
 Properties are suitable for serialization
@@ -252,9 +268,9 @@ We know we want to update only some fields firstname and email, so we fetch the 
         firstname = StringField(required=True, max_length=40)
         email = EmailField()
 
-    User.add_source("db", filters=rename_field('_id', 'id'))
+    User.add_source("db", filter=rename_field('_id', 'id'))
 
-    User.add_view("db", filters=rename_field('id', '_id'))
+    User.add_view("db", filter=rename_field('id', '_id'))
     User.add_view("public", remove_fields=['email'])
 
     >>> user_dict = db.user.find_one({'email':'bob@sponge.com'})

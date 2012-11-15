@@ -339,7 +339,7 @@ class Document(object):
         self.update_from_dict(values, changed=False)
 
     def __getattr__(self, name):
-        field = self._fields.get(name, None)
+        field = self._fields.get(name)
         if field:
             value = field.default
             if callable(value):
@@ -352,7 +352,7 @@ class Document(object):
         raise AttributeError
 
     def __setattr__(self, name, value):
-        field = self._fields.get(name, None)
+        field = self._fields.get(name)
         if field is not None:
             if hasattr(field, "_prepare"):
                 value = field._prepare(self, value)
@@ -422,9 +422,16 @@ class Document(object):
     @classmethod
     def add_source(cls, name, keep_fields=None, remove_fields=None,
             filter=None):
+        """Add new import methods to the document. The import methods may be
+        specialized according to the arguments *keep_fields*, *remove_fields*
+        and *filter*.
+
+        By default every document is created with a **dict** source providing
+        the method ``update_from_dict`` and the class method ``from_dict``.
+        """
 
         if keep_fields is not None:
-            fields = map(lambda x: (x, cls._fields.get(x)), keep_fields)
+            fields = [(x, cls._fields.get(x)) for x in keep_fields]
         elif remove_fields is not None:
             fields = [(name, field) for name, field in cls._fields
                     if name not in remove_fields]
@@ -436,6 +443,7 @@ class Document(object):
                 data = filter(data)
             elif isinstance(filter, basestring):
                 data = getattr(self, filter)(data)
+
             for key, field in fields:
                 value = data.get(key)
 
@@ -448,24 +456,34 @@ class Document(object):
                         field._changed(self)
             return self
 
-        update_caller = operator.attrgetter("update_from_%s" % name)
+        update.__name__ = "update_from_%s" % name
+        update.__doc__ = """
+        Update a document from a Python ``dict``.
+        """
+        updategetter = operator.attrgetter(update.__name__)
 
-        def inner(cls, **kwargs):
+        def source(cls, **kwargs):
             instance = cls()
-            return update_caller(instance)(kwargs, changed=False)
+            return updategetter(instance)(kwargs, changed=False)
 
-        # the field list should be immutable
-        setattr(cls, "%s_source_fields" % name, map(lambda x: x[0], fields))
-        setattr(cls, "update_from_%s" % name, update)
-        setattr(cls, "from_%s" % name, classmethod(inner))
+        source.__name__ = "from_%s" % name
+        source.__doc__ = """
+        Create a document from Python keyword arguments.
+        """
+
+        setattr(cls, "%s_source_fields" % name, tuple([x[0] for x in fields]))
+        setattr(cls, update.__name__, update)
+        setattr(cls, source.__name__, classmethod(source))
 
     @classmethod
     def add_view(cls, name, keep_fields=None, remove_fields=None,
             filter=None):
-        """A view is a possibly modified representation of the document as a
-        python dictionnary. You can alter the representation by specifying a
-        list of filters executed in the given order over the dictionnary
-        generated from keep_fields or remove_fields."""
+        """Add new export methods to the document. The export methods may be
+        specialized according to the arguments *keep_fields*, *remove_fields*
+        and *filter*.
+
+        By default every document is created with a **dict** view providing
+        the method ``to_dict``."""
 
         if keep_fields is not None:
             fields = keep_fields
@@ -476,33 +494,27 @@ class Document(object):
             fields = cls._fields.keys()
 
         todo = []
+        methodcaller = operator.methodcaller("to_%s" % name)
         for field_name in fields:
             field = cls._fields.get(field_name)
 
-            def create_caller(name):
-                return operator.methodcaller("to_%s" % name)
-
             if isinstance(field, EmbeddedDocumentField):
-                todo.append((field_name, create_caller(name)))
+                todo.append((field_name, methodcaller))
             elif isinstance(field, ListField) and \
                     isinstance(field.subfield, EmbeddedDocumentField):
 
-                def create_loop_caller(caller):
-                    def loop(value):
-                        new_value = []
-                        for elem in value:
-                            new_value.append(caller(elem))
-                        return new_value
-                    return loop
+                def loopcaller(value):
+                    new_value = []
+                    for elem in value:
+                        new_value.append(methodcaller(elem))
+                    return new_value
 
                 todo.append((field_name,
-                    create_loop_caller(create_caller(name))))
+                    loopcaller))
             else:
                 todo.append((field_name, None))
 
         def view(self, only_modified=False, validate=True):
-            """This inner function executes previously created plan to
-            construct a view of the document."""
             if validate and not self.validate():
                 raise ValidationException
 
@@ -512,27 +524,28 @@ class Document(object):
             else:
                 todo_specialized = todo
 
-            elems = []
+            data = {}
             for key, do in todo_specialized:
                 value = getattr(self, key)
                 if value is not None:
                     if do:
                         value = do(value)
-                    elems.append((key, value))
-            data = dict(elems)
+                    data[key] = value
             if callable(filter):
                 data = filter(data)
             elif isinstance(filter, basestring):
                 data = getattr(self, filter)(data)
             return data
 
-        # the view field list should be immutable
-        setattr(cls, "%s_view_fields" % name, fields)
-        setattr(cls, "to_%s" % name, view)
+        view.__name__ = "to_%s" % name
+        view.__doc__ = """Export the document to a Python dict."""
+
+        setattr(cls, "%s_view_fields" % name, tuple(fields))
+        setattr(cls, view.__name__, view)
 
 
 def rename_field(old_name, new_name):
-    """Make a filter renaming `old_name` to `new_name`."""
+    """Make a filter renaming *old_name* to *new_name*."""
     def _rename_field(data):
         elem = data.pop(old_name, None)
         if elem is not None:
@@ -542,8 +555,8 @@ def rename_field(old_name, new_name):
 
 
 def format_field(name, func):
-    """Make a filter replacing the content of the field `name` by the result of
-    the function func."""
+    """Make a filter replacing the content of the field *name* by the result of
+    the function *func*."""
     def _format_field(data):
         elem = data.get(name)
         if elem is not None:
