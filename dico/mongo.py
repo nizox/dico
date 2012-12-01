@@ -1,12 +1,9 @@
 try:
     import bson.objectid
 except ImportError:
-    raise ImportError(
-        'Using the ObjectIdField requires Pymongo. '
-    )
+    raise ImportError("Using the ObjectIdField requires Pymongo.")
 
-from . import BaseField, Document, rename_field
-from functools import partial
+from . import BaseField, ListField, FloatField
 
 
 class ObjectIdField(BaseField):
@@ -14,3 +11,9 @@ class ObjectIdField(BaseField):
         if not isinstance(value, (bson.objectid.ObjectId)):
             return False
         return True
+
+
+class GeoPointField(ListField):
+    def __init__(self, **kwargs):
+        super(GeoPointField, self).__init__(FloatField(),
+                min_length=2, max_length=2, **kwargs)

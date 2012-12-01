@@ -854,6 +854,14 @@ class TestDico(unittest.TestCase):
         user.url = ''
         self.assertTrue(user.validate())
 
+    def test_geoip(self):
+        class Checkin(dico.Document):
+            position = dico.mongo.GeoPointField()
+
+        c = Checkin(position=(2, 3,))
+        self.assertTrue(c.validate())
+        c.position = "te"
+        self.assertFalse(c.validate())
 
 if __name__ == "__main__":
     unittest.main()
