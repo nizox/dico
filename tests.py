@@ -174,6 +174,26 @@ class TestDico(unittest.TestCase):
         user.lastname = 'Spong'
         self.assertIn('lastname', user.to_dict())
 
+    def test_view_nested_document(self):
+        class Profile(dico.Document):
+            name = dico.StringField()
+            age = dico.IntegerField()
+
+        Profile.add_view("test", ["name"])
+
+        class Token(dico.Document):
+            key = dico.StringField()
+
+        class User(dico.Document):
+            id = dico.mongo.ObjectIdField()
+            profile = dico.EmbeddedDocumentField(Profile)
+            token = dico.ListField(dico.EmbeddedDocumentField(Token))
+
+        User.add_view("test", remove_fields=["id"])
+        self.assertEqual(getattr(Profile, "test_view_fields", None),
+                ("name",))
+        self.assertEqual(getattr(Token, "test_view_fields", None), ("key",))
+
     def test_modified_fields(self):
         class User(dico.Document):
             name = dico.StringField()
@@ -355,12 +375,21 @@ class TestDico(unittest.TestCase):
     def test_source(self):
         class User(dico.Document):
             id = dico.IntegerField()
+            encrypted_password = dico.StringField()
 
             @staticmethod
             def rename_id(data_dict):
                 data_dict = dico.rename_field('_id', 'id')(data_dict)
                 data_dict = dico.rename_field('aid', 'id')(data_dict)
                 return data_dict
+
+            def get_password(self):
+                return "encrypted"
+
+            def set_password(self, password):
+                self.encrypted_password = password.swapcase()
+
+            password = property(get_password, set_password)
 
         User.add_source("db", filter="rename_id")
 
@@ -372,6 +401,11 @@ class TestDico(unittest.TestCase):
         user = user.update_from_db({'aid': 4})
         self.assertIn("id", user.modified_fields())
         self.assertEqual(user.id, 4)
+
+        User.add_source("user", ["password"])
+        user = User.from_user(password="lskmd")
+        self.assertEqual(user.password, "encrypted")
+        self.assertEqual(user.encrypted_password, "LSKMD")
 
         class User(dico.Document):
             id = dico.IntegerField()
@@ -386,6 +420,26 @@ class TestDico(unittest.TestCase):
         self.assertNotEqual(user.id, 1)
         self.assertEqual(user.name, "Angel")
         self.assertEqual(user.birthday, datetime(1980, 12, 3))
+
+    def test_source_nested_document(self):
+        class Profile(dico.Document):
+            name = dico.StringField()
+            age = dico.IntegerField()
+
+        Profile.add_source("test", ["name"])
+
+        class Token(dico.Document):
+            key = dico.StringField()
+
+        class User(dico.Document):
+            id = dico.mongo.ObjectIdField()
+            profile = dico.EmbeddedDocumentField(Profile)
+            token = dico.ListField(dico.EmbeddedDocumentField(Token))
+
+        User.add_source("test", remove_fields=["id"])
+        self.assertEqual(getattr(Profile, "test_source_fields", None),
+                ("name",))
+        self.assertEqual(getattr(Token, "test_source_fields", None), ("key",))
 
     def test_float_field(self):
         class User(dico.Document):

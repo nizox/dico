@@ -431,12 +431,28 @@ class Document(object):
         """
 
         if keep_fields is not None:
-            fields = [(x, cls._fields.get(x)) for x in keep_fields]
+            fields = [(field_name, cls._fields.get(field_name))
+                for field_name in keep_fields]
         elif remove_fields is not None:
-            fields = [(name, field) for name, field in cls._fields
-                    if name not in remove_fields]
+            fields = [(field_name, field) for field_name, field in
+                    cls._fields.items() if field_name not in remove_fields]
         else:
             fields = cls._fields.items()
+
+        setattr(cls, "%s_source_fields" % name, tuple([x[0] for x in fields]))
+
+        for _, field in fields:
+            if isinstance(field, EmbeddedDocumentField):
+                if not hasattr(field.field_type, "%s_source_fields" % name):
+                    # create a default source for the embedded document
+                    field.field_type.add_source(name)
+            elif isinstance(field, ListField) and \
+                    isinstance(field.subfield, EmbeddedDocumentField):
+
+                if not hasattr(field.subfield.field_type, "%s_source_fields"
+                        % name):
+                    # create a default source for the embedded document
+                    field.subfield.field_type.add_source(name)
 
         def update(self, data, changed=True):
             if callable(filter):
@@ -448,12 +464,15 @@ class Document(object):
                 value = data.get(key)
 
                 if value is not None:
-                    if hasattr(field, "_prepare"):
-                        value = field._prepare(self, value,
-                                source=name)
-                    object.__setattr__(self, key, value)
-                    if changed:
-                        field._changed(self)
+                    if field is not None:
+                        if hasattr(field, "_prepare"):
+                            value = field._prepare(self, value,
+                                    source=name)
+                        object.__setattr__(self, key, value)
+                        if changed:
+                            field._changed(self)
+                    else:
+                        object.__setattr__(self, key, value)
             return self
 
         update.__name__ = "update_from_%s" % name
@@ -471,7 +490,6 @@ class Document(object):
         Create a document from Python keyword arguments.
         """
 
-        setattr(cls, "%s_source_fields" % name, tuple([x[0] for x in fields]))
         setattr(cls, update.__name__, update)
         setattr(cls, source.__name__, classmethod(source))
 
@@ -493,15 +511,25 @@ class Document(object):
         else:
             fields = cls._fields.keys()
 
+        setattr(cls, "%s_view_fields" % name, tuple(fields))
+
         todo = []
         methodcaller = operator.methodcaller("to_%s" % name)
         for field_name in fields:
             field = cls._fields.get(field_name)
 
             if isinstance(field, EmbeddedDocumentField):
+                if not hasattr(field.field_type, "%s_view_fields" % name):
+                    # create a default view for the embedded document
+                    field.field_type.add_view(name)
                 todo.append((field_name, methodcaller))
             elif isinstance(field, ListField) and \
                     isinstance(field.subfield, EmbeddedDocumentField):
+
+                if not hasattr(field.subfield.field_type, "%s_view_fields"
+                        % name):
+                    # create a default view for the embedded document
+                    field.subfield.field_type.add_view(name)
 
                 def loopcaller(value):
                     new_value = []
@@ -540,7 +568,6 @@ class Document(object):
         view.__name__ = "to_%s" % name
         view.__doc__ = """Export the document to a Python dict."""
 
-        setattr(cls, "%s_view_fields" % name, tuple(fields))
         setattr(cls, view.__name__, view)
 
 
