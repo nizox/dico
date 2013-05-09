@@ -552,18 +552,6 @@ class TestDico(unittest.TestCase):
         user.id = 53
         self.assertIn('_id', user.to_save())
 
-    def test_slots(self):
-        class User(dico.Document):
-            id = dico.IntegerField()
-
-        user = User()
-        error = False
-        try:
-            user.truc = 2
-        except AttributeError:
-            error = True
-        self.assertTrue(error)
-
     def test_creation_double_bug(self):
         class TestObj(dico.Document):
             id = dico.IntegerField()
@@ -869,6 +857,51 @@ class TestDico(unittest.TestCase):
         self.assertTrue(c.validate())
         c.position = "te"
         self.assertFalse(c.validate())
+
+    def test_embedded_parents(self):
+
+        class E(dico.Document):
+            value = dico.IntegerField()
+
+        class A(dico.Document):
+            e = dico.EmbeddedDocumentField(E)
+
+        class B(dico.Document):
+            e = dico.EmbeddedDocumentField(E)
+
+        e = E(value=0)
+        a = A(e=e)
+        b = B(e=e)
+        self.assertIs(a.e, e)
+        self.assertIs(b.e, e)
+
+        e.value = 5
+        self.assertEqual(a.e.value, 5)
+        self.assertEqual(b.e.value, 5)
+        self.assertIn("e", a.modified_fields())
+        self.assertIn("e", b.modified_fields())
+
+    def test_list_parents(self):
+
+        class E(dico.Document):
+            value = dico.IntegerField()
+
+        class A(dico.Document):
+            es = dico.ListField(dico.EmbeddedDocumentField(E))
+
+        class B(dico.Document):
+            es = dico.ListField(dico.EmbeddedDocumentField(E))
+
+        e = E(value=0)
+        a = A(es=[e, e, e])
+        b = B(es=[e, e, e])
+
+        e.value = 5
+        self.assertEqual(a.es[1].value, 5)
+        self.assertEqual(b.es[0].value, 5)
+        self.assertIn("es", a.modified_fields())
+        self.assertIn("es", b.modified_fields())
+
 
 if __name__ == "__main__":
     unittest.main()

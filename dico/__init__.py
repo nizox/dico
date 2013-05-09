@@ -46,9 +46,8 @@ class BaseField(object):
         instance._modified_fields.add(self.field_name)
         instance._is_valid = False
         # called recursively
-        if instance._parent:
-            field = instance._parent_field
-            field._changed(instance._parent)
+        for parent, parent_field in instance._parents:
+            parent_field._changed(parent)
 
 
 class EmbeddedDocumentField(BaseField):
@@ -60,16 +59,18 @@ class EmbeddedDocumentField(BaseField):
 
         super(EmbeddedDocumentField, self).__init__(**kwargs)
 
-    def _prepare(self, instance, value, source="dict"):
+    def _prepare(self, instance, value, source=None):
         """ we instantiate the dict to an object if needed
             and set the parent
         """
         if isinstance(value, dict):
-            value = getattr(self.field_type, "from_%s" % source)(**value)
-            value._parent = instance
-            value._parent_field = self
+            if source is None:
+                source = "dict"
+            value = getattr(self.field_type, "from_%s" % source,
+                    self.field_type.from_dict)(**value)
+        # we should not fail if value has the wrong type
         if isinstance(value, self.field_type):
-            value._parent_field = self
+            value._parents.add((instance, self))
         return value
 
     def _validate(self, value):
@@ -84,17 +85,15 @@ class NotifyParentList(list):
         A minimal list subclass that will notify for modification to the parent
         for special case like parent.obj.append
     """
-    def __init__(self, seq=(), parent=None, field=None):
-        self._parent = parent
-        self._field = field
+    def __init__(self, seq=()):
+        self._parents = set()
         super(NotifyParentList, self).__init__(seq)
 
     def _tag_obj_for_parent_name(self, obj):
         """ check if the obj is a document and set his parent_name
         """
         if isinstance(obj, Document):
-            obj._parent = self._parent
-            obj._parent_field = self._field
+            obj._parents = obj._parents.union(self._parents)
             return
         try:
             iter(obj)
@@ -102,11 +101,11 @@ class NotifyParentList(list):
             return
         for entry in obj:
             if isinstance(entry, Document):
-                entry._parent = self._parent
-                entry._parent_field = self._field
+                entry._parents = entry._parents.union(self._parents)
 
     def _notify_parents(self):
-        self._field._changed(self._parent)
+        for parent, parent_field in self._parents:
+            parent_field._changed(parent)
 
     def __add__(self, other):
         self._tag_obj_for_parent_name(other)
@@ -190,7 +189,7 @@ class ListField(BaseField):
                 return False
         return True
 
-    def _prepare(self, instance, value, source="dict"):
+    def _prepare(self, instance, value, source=None):
         """ we set the parent for each element
             and set a NotifyParentList in place of a list
         """
@@ -207,7 +206,8 @@ class ListField(BaseField):
                         obj_list.append(obj)
                 value = obj_list
             if not isinstance(value, NotifyParentList):
-                value = NotifyParentList(value, parent=instance, field=self)
+                value = NotifyParentList(value)
+                value._parents.add((instance, self))
         return value
 
 
@@ -290,51 +290,40 @@ class DateTimeField(BaseField):
 
 class DocumentMetaClass(type):
     def __new__(cls, name, bases, attrs):
-        meta = attrs.get("_meta", False)
-        if not meta:
-            fields = {}
-            newattrs = {}
-            for attr_name, attr_value in attrs.items():
-                if isinstance(attr_value, BaseField):
-                    fields[attr_name] = attr_value
-                else:
-                    newattrs[attr_name] = attr_value
-            newattrs["__slots__"] = tuple(fields.keys())
-            newattrs["_fields"] = fields
-        else:
-            newattrs = attrs
-        newattrs["_meta"] = meta
+        fields = {}
+        newattrs = {}
+        for attr_name, attr_value in attrs.items():
+            if isinstance(attr_value, BaseField):
+                fields[attr_name] = attr_value
+            else:
+                newattrs[attr_name] = attr_value
+        newattrs["_fields"] = fields
 
         klass = type.__new__(cls, name, bases, newattrs)
 
-        if not meta:
-            for field_name, field in klass._fields.items():
-                field._register_document(klass, field_name)
+        for field_name, field in fields.items():
+            field._register_document(klass, field_name)
 
-            for base in bases:
-                if not getattr(base, "_meta", True):
-                    base_fields = base._fields.copy()
-                    base_fields.update(klass._fields)
-                    klass._fields = base_fields
+        for base in bases:
+            if hasattr(base, "_fields"):
+                base_fields = base._fields.copy()
+                base_fields.update(klass._fields)
+                klass._fields = base_fields
 
-            klass.add_source("dict")
-            klass.add_view("dict")
+        klass.add_source("dict")
+        klass.add_view("dict")
         return klass
 
 
 class Document(object):
 
     __metaclass__ = DocumentMetaClass
-    __slots__ = ('_modified_fields', '_is_valid', '_parent', '_parent_field')
-
-    _meta = True
 
     def __init__(self, **values):
         self._modified_fields = set()
         # optimization to avoid double validate() if nothing has changed
         self._is_valid = False
-        self._parent = None
-        self._parent_field = None
+        self._parents = set()
 
         self.update_from_dict(values, changed=False)
 
