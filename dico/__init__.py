@@ -3,6 +3,8 @@ import datetime
 import socket
 import operator
 
+from .mutable import NotifyList, MutableSequence
+
 URL_REGEX_COMPILED = re.compile(
     r'^https?://'
     r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|'
@@ -80,84 +82,6 @@ class EmbeddedDocumentField(BaseField):
         return value.validate()
 
 
-class NotifyParentList(list):
-    """
-        A minimal list subclass that will notify for modification to the parent
-        for special case like parent.obj.append
-    """
-    def __init__(self, seq=()):
-        self._parents = set()
-        super(NotifyParentList, self).__init__(seq)
-
-    def _tag_obj_for_parent_name(self, obj):
-        """ check if the obj is a document and set his parent_name
-        """
-        if isinstance(obj, Document):
-            obj._parents = obj._parents.union(self._parents)
-            return
-        try:
-            iter(obj)
-        except TypeError:
-            return
-        for entry in obj:
-            if isinstance(entry, Document):
-                entry._parents = entry._parents.union(self._parents)
-
-    def _notify_parents(self):
-        for parent, parent_field in self._parents:
-            parent_field._changed(parent)
-
-    def __add__(self, other):
-        self._tag_obj_for_parent_name(other)
-        self._notify_parents()
-        return super(NotifyParentList, self).__add__(other)
-
-    def __setslice__(self, i, j, seq):
-        self._tag_obj_for_parent_name(seq)
-        self._notify_parents()
-        return super(NotifyParentList, self).__setslice__(i, j, seq)
-
-    def __delslice__(self, i, j):
-        self._notify_parents()
-        return super(NotifyParentList, self).__delslice__(i, j)
-
-    def __setitem__(self, key, value):
-        self._tag_obj_for_parent_name(value)
-        self._notify_parents()
-        return super(NotifyParentList, self).__setitem__(key, value)
-
-    def __delitem__(self, key):
-        self._notify_parents()
-        return super(NotifyParentList, self).__delitem__(key)
-
-    def append(self, p_object):
-        self._tag_obj_for_parent_name(p_object)
-        self._notify_parents()
-        return super(NotifyParentList, self).append(p_object)
-
-    def remove(self, value):
-        self._notify_parents()
-        return super(NotifyParentList, self).remove(value)
-
-    def insert(self, index, p_object):
-        self._tag_obj_for_parent_name(p_object)
-        self._notify_parents()
-        return super(NotifyParentList, self).insert(index, p_object)
-
-    def extend(self, iterable):
-        self._tag_obj_for_parent_name(iterable)
-        self._notify_parents()
-        return super(NotifyParentList, self).extend(iterable)
-
-    def pop(self, index=None):
-        if index is None:
-            if super(NotifyParentList, self).pop():
-                self._notify_parents()
-        else:
-            if super(NotifyParentList, self).pop(index):
-                self._notify_parents()
-
-
 class ListField(BaseField):
     def __init__(self, subfield, max_length=0, min_length=0, **kwargs):
         self.subfield = subfield
@@ -176,7 +100,7 @@ class ListField(BaseField):
         BaseField._register_document(self, document, field_name)
 
     def _validate(self, value):
-        if not isinstance(value, list):
+        if not isinstance(value, MutableSequence):
             return False
         if self.max_length != 0:
             if len(value) > self.max_length:
@@ -205,8 +129,8 @@ class ListField(BaseField):
                     if obj:
                         obj_list.append(obj)
                 value = obj_list
-            if not isinstance(value, NotifyParentList):
-                value = NotifyParentList(value)
+            if not isinstance(value, NotifyList):
+                value = NotifyList(value)
                 value._parents.add((instance, self))
         return value
 

@@ -658,10 +658,6 @@ class TestDico(unittest.TestCase):
         self.assertIn('tokens', user.modified_fields())
 
         user = User(**user_dict)
-        user.tokens + [token]
-        self.assertIn('tokens', user.modified_fields())
-
-        user = User(**user_dict)
         # not that we will add the same object should not raise modification
         user.tokens[0] = token
         self.assertIn('tokens', user.modified_fields())
