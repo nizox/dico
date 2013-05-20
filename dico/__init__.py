@@ -3,7 +3,7 @@ import datetime
 import socket
 import operator
 
-from .mutable import NotifyList, MutableSequence
+from .mutable import NotifyList, MutableSequence, NotifyDict, MutableMapping
 
 URL_REGEX_COMPILED = re.compile(
     r'^https?://'
@@ -82,8 +82,56 @@ class EmbeddedDocumentField(BaseField):
         return value.validate()
 
 
+class MappingField(BaseField):
+    def __init__(self, keysubfield, valuesubfield, **kwargs):
+        self.keysubfield = keysubfield
+        self.valuesubfield = valuesubfield
+        if "default" not in kwargs:
+            kwargs["default"] = {}
+
+        if not isinstance(keysubfield, BaseField) \
+                or not isinstance(valuesubfield, BaseField):
+            raise AttributeError('MappingField only accepts '
+                'BaseField subclass')
+
+        super(MappingField, self).__init__(**kwargs)
+
+    def _register_document(self, document, field_name):
+        self.keysubfield._register_document(document, field_name)
+        self.valuesubfield._register_document(document, field_name)
+        super(MappingField, self)._register_document(document, field_name)
+
+    def _validate(self, value):
+        if not isinstance(value, MutableMapping):
+            return False
+        for key, value in value.items():
+            if not self.keysubfield._validate(key):
+                return False
+            if not self.valuesubfield._validate(value):
+                return False
+        return True
+
+    def _prepare(self, instance, values, source=None):
+        """ we set the parent for each element
+            and set a NotifyParentList in place of a list
+        """
+        if isinstance(values, MutableMapping):
+            obj_mapping = NotifyDict()
+            for key, value in values.items():
+                if hasattr(self.keysubfield, "_prepare"):
+                    key = self.keysubfield._prepare(instance, key,
+                            source=source)
+                if hasattr(self.valuesubfield, "_prepare"):
+                    value = self.valuesubfield._prepare(instance, value,
+                            source=source)
+                obj_mapping[key] = value
+            obj_mapping._parents.add((instance, self))
+            return obj_mapping
+        return values
+
+
 class ListField(BaseField):
-    def __init__(self, subfield, max_length=0, min_length=0, **kwargs):
+    def __init__(self, subfield, max_length=None, min_length=None, **kwargs):
         self.subfield = subfield
         self.max_length = max_length
         self.min_length = min_length
@@ -102,10 +150,10 @@ class ListField(BaseField):
     def _validate(self, value):
         if not isinstance(value, MutableSequence):
             return False
-        if self.max_length != 0:
+        if self.max_length is not None:
             if len(value) > self.max_length:
                 return False
-        if self.min_length != 0:
+        if self.min_length is not None:
             if len(value) < self.min_length:
                 return False
         for entry in value:
@@ -117,21 +165,16 @@ class ListField(BaseField):
         """ we set the parent for each element
             and set a NotifyParentList in place of a list
         """
-        try:
-            iter(value)
-        except TypeError:
-            pass
-        else:
+        if isinstance(value, MutableSequence):
             if hasattr(self.subfield, "_prepare"):
-                obj_list = []
+                obj_list = NotifyList()
                 for obj in value:
                     obj = self.subfield._prepare(instance, obj, source=source)
-                    if obj:
-                        obj_list.append(obj)
+                    obj_list.append(obj)
                 value = obj_list
-            if not isinstance(value, NotifyList):
+            else:
                 value = NotifyList(value)
-                value._parents.add((instance, self))
+            value._parents.add((instance, self))
         return value
 
 
@@ -366,6 +409,13 @@ class Document(object):
                         % name):
                     # create a default source for the embedded document
                     field.subfield.field_type.add_source(name)
+            elif isinstance(field, MappingField) and \
+                    isinstance(field.valuesubfield, EmbeddedDocumentField):
+
+                if not hasattr(field.valuesubfield.field_type,
+                        "%s_source_fields" % name):
+                    # create a default source for the embedded document
+                    field.valuesubfield.field_type.add_source(name)
 
         def update(self, data, changed=True):
             if callable(filter):
@@ -450,8 +500,22 @@ class Document(object):
                         new_value.append(methodcaller(elem))
                     return new_value
 
-                todo.append((field_name,
-                    loopcaller))
+                todo.append((field_name, loopcaller))
+            elif isinstance(field, MappingField) and \
+                    isinstance(field.valuesubfield, EmbeddedDocumentField):
+
+                if not hasattr(field.valuesubfield.field_type, "%s_view_fields"
+                        % name):
+                    # create a default view for the embedded document
+                    field.valuesubfield.field_type.add_view(name)
+
+                def mappingcaller(values):
+                    new_values = {}
+                    for key, value in values.items():
+                        new_values[key] = methodcaller(value)
+                    return new_values
+
+                todo.append((field_name, mappingcaller))
             else:
                 todo.append((field_name, None))
 

@@ -849,7 +849,7 @@ class TestDico(unittest.TestCase):
         class Checkin(dico.Document):
             position = dico.mongo.GeoPointField()
 
-        c = Checkin(position=(2, 3,))
+        c = Checkin(position=[2, 3])
         self.assertTrue(c.validate())
         c.position = "te"
         self.assertFalse(c.validate())
@@ -897,6 +897,22 @@ class TestDico(unittest.TestCase):
         self.assertEqual(b.es[0].value, 5)
         self.assertIn("es", a.modified_fields())
         self.assertIn("es", b.modified_fields())
+
+    def test_mapping(self):
+
+        class A(dico.Document):
+            stats = dico.MappingField(dico.StringField(), dico.IntegerField())
+
+        a = A(stats={"total": 5, "min": 1})
+        self.assertEqual(a.stats["total"], 5)
+        self.assertEqual(len(a.stats), 2)
+
+        a.stats["avg"] = 2
+        self.assertIn("stats", a.modified_fields())
+
+        av = a.to_dict()
+        self.assertIn("min", av["stats"])
+        self.assertEqual(av["stats"]["min"], 1)
 
 
 if __name__ == "__main__":
